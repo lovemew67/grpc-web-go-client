@@ -3,6 +3,7 @@ package grpcweb
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -54,7 +55,8 @@ func (t *HTTPTransport) Send(ctx context.Context, body io.Reader) (io.ReadCloser
 	}()
 
 	// TODO: insecure option
-	protocol := "http"
+	// protocol := "http"
+	protocol := "https"
 
 	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("%s://%s%s", protocol, t.host, t.req.endpoint), body)
 	if err != nil {
@@ -74,9 +76,15 @@ func (t *HTTPTransport) Send(ctx context.Context, body io.Reader) (io.ReadCloser
 
 func HTTPTransportBuilder(host string, req *Request) Transport {
 	return &HTTPTransport{
-		host:   host,
-		req:    req,
-		client: &http.Client{},
+		host: host,
+		req:  req,
+		client: &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{
+					InsecureSkipVerify: true,
+				},
+			},
+		},
 	}
 }
 

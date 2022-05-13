@@ -1,13 +1,7 @@
 package grpcweb
 
 import (
-	"bytes"
 	"context"
-	"fmt"
-	"io"
-	"io/ioutil"
-	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -19,11 +13,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var defaultAddr = "localhost:50051"
-
-func p(s string) *string {
-	return &s
-}
+// var defaultAddr = "localhost:8880"
+var defaultAddr4 = "grpcweb.howardzhou.dev:443"
 
 type protoHelper struct {
 	*desc.FileDescriptor
@@ -63,253 +54,42 @@ func (h *protoHelper) getMessageTypeByName(t *testing.T, n string) *dynamic.Mess
 func getAPIProto(t *testing.T) *protoHelper {
 	t.Helper()
 
-	pkgs := parseProto(t, "api.proto")
+	pkgs := parseProto(t, "echo.proto")
 	require.Len(t, pkgs, 1)
 
 	return &protoHelper{FileDescriptor: pkgs[0]}
 }
 
-func readFile(t *testing.T, fname string) []byte {
-	b, err := ioutil.ReadFile(filepath.Join("testdata", fname))
-	require.NoError(t, err)
-	return b
-}
-
-type stubTransport struct {
-	host string
-	req  *Request
-
-	res []byte
-}
-
-func (t *stubTransport) Send(_ context.Context, body io.Reader) (io.ReadCloser, error) {
-	return ioutil.NopCloser(bytes.NewReader(t.res)), nil
-}
-
-type stubStreamTransport struct {
-	res []byte
-}
-
-func (b *stubStreamTransport) Send(body io.Reader) error {
-	return nil
-}
-
-func (b *stubStreamTransport) Receive() (io.ReadCloser, error) {
-	return ioutil.NopCloser(bytes.NewReader(b.res)), nil
-}
-
-func (b *stubStreamTransport) Finish() (io.ReadCloser, error) {
-	return ioutil.NopCloser(bytes.NewReader(b.res)), nil
-}
-
-func (b *stubStreamTransport) Close() error {
-	return nil
-}
-
-// for testing
-func withStubTransport(t *stubTransport, st *stubStreamTransport) ClientOption {
-	stubBuilder := func(host string, req *Request) Transport {
-		t.host = host
-		t.req = req
-		return t
-	}
-	stubStreamBuilder := func(host string, endpoint string) (StreamTransport, error) {
-		return st, nil
-	}
-	return func(c *Client) {
-		c.tb = stubBuilder
-		c.stb = stubStreamBuilder
-	}
-}
-
-func TestClient(t *testing.T) {
+func Test_ClientE2E(t *testing.T) {
 	pkg := getAPIProto(t)
-	service := pkg.getServiceByName(t, "Example")
-	endpoint := ToEndpoint("api", service, service.GetMethod()[0])
-
-	t.Run("ToEndpoint", func(t *testing.T) {
-		expected := fmt.Sprintf("/api.%s/%s", service.GetName(), service.GetMethod()[0].GetName())
-		assert.Equal(t, expected, endpoint)
-	})
-
-	t.Run("NewClient returns new API client", func(t *testing.T) {
-		client := NewClient(defaultAddr, withStubTransport(&stubTransport{}, nil))
-		assert.NotNil(t, client)
-	})
-
-	t.Run("Send an unary API", func(t *testing.T) {
-		client := NewClient(defaultAddr, withStubTransport(&stubTransport{
-			res: readFile(t, "unary_ktr.out"),
-		}, nil))
-
-		in, out := pkg.getMessageTypeByName(t, "SimpleRequest"), pkg.getMessageTypeByName(t, "SimpleResponse")
-		req := NewRequest(endpoint, in, out)
-		res, err := client.Unary(context.Background(), req)
-		assert.NoError(t, err)
-		assert.Equal(t, "hello, ktr", extractMessage(t, res))
-	})
-
-	t.Run("Send a server streaming API", func(t *testing.T) {
-		client := NewClient(defaultAddr, withStubTransport(&stubTransport{
-			res: readFile(t, "server_ktr.out"),
-		}, nil))
-
-		in, out := pkg.getMessageTypeByName(t, "SimpleRequest"), pkg.getMessageTypeByName(t, "SimpleResponse")
-		req := NewRequest(endpoint, in, out)
-		s, err := client.ServerStreaming(context.Background(), req)
-		assert.NoError(t, err)
-
-		for i := 0; ; i++ {
-			res, err := s.Receive()
-			if err == io.EOF {
-				break
-			}
-			require.NoError(t, err)
-
-			expected := fmt.Sprintf("hello ktr, I greet %d times.", i)
-			assert.Equal(t, expected, extractMessage(t, res))
-		}
-	})
-}
-
-func TestClientE2E(t *testing.T) {
-	pkg := getAPIProto(t)
-	service := pkg.getServiceByName(t, "Example")
+	service := pkg.getServiceByName(t, "EchoService")
 
 	t.Run("Unary", func(t *testing.T) {
-		defer server.New(false).Serve(nil, true).Stop()
+		defer server.New().Serve().Stop()
 
-		client := NewClient(defaultAddr)
-		endpoint := ToEndpoint("api", service, service.GetMethod()[0])
+		client := NewClient(defaultAddr4)
+		endpoint := ToEndpoint("echo", service, service.GetMethod()[0])
 
-		in := pkg.getMessageTypeByName(t, "SimpleRequest")
+		in := pkg.getMessageTypeByName(t, "HiRequest")
 
 		cases := []string{
-			"ktr",
-			"tooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo-looooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooong-teeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeext",
+			time.Now().UTC().String(),
+			time.Now().UTC().String(),
 		}
 
 		for _, c := range cases {
-			in.SetFieldByName("name", c)
+			in.SetFieldByName("message", c)
 
-			out := pkg.getMessageTypeByName(t, "SimpleResponse")
+			out := pkg.getMessageTypeByName(t, "HiResponse")
 
 			req := NewRequest(endpoint, in, out)
 			res, err := client.Unary(context.Background(), req)
 			assert.NoError(t, err)
 
-			expected := fmt.Sprintf("hello, %s", c)
-			assert.Equal(t, expected, extractMessage(t, res))
+			assert.Equal(t, c, extractMessage(t, res))
+			// expected := fmt.Sprintf("hello, %s", c)
+			// assert.Equal(t, expected, extractMessage(t, res))
 		}
-	})
-
-	t.Run("ServerStreaming", func(t *testing.T) {
-		defer server.New(false).Serve(nil, true).Stop()
-
-		client := NewClient(defaultAddr)
-		endpoint := ToEndpoint("api", service, service.GetMethod()[10])
-		assert.Equal(t, endpoint, "/api.Example/ServerStreaming")
-
-		in := pkg.getMessageTypeByName(t, "SimpleRequest")
-		in.SetFieldByName("name", "ktr")
-		out := pkg.getMessageTypeByName(t, "SimpleResponse")
-
-		req := NewRequest(endpoint, in, out)
-
-		s, err := client.ServerStreaming(context.Background(), req)
-		assert.NoError(t, err)
-
-		for i := 0; ; i++ {
-			res, err := s.Receive()
-			if err == io.EOF {
-				break
-			}
-			require.NoError(t, err)
-
-			expected := fmt.Sprintf("hello ktr, I greet %d times.", i)
-			assert.Equal(t, expected, extractMessage(t, res))
-		}
-	})
-
-	t.Run("ClientStreaming", func(t *testing.T) {
-		defer server.New(false).Serve(nil, true).Stop()
-
-		client := NewClient(defaultAddr)
-		endpoint := ToEndpoint("api", service, service.GetMethod()[9])
-		assert.Equal(t, endpoint, "/api.Example/ClientStreaming")
-
-		out := pkg.getMessageTypeByName(t, "SimpleResponse")
-
-		s, err := client.ClientStreaming(context.Background())
-		assert.NoError(t, err)
-
-		for i := 0; i < 3; i++ {
-			in := pkg.getMessageTypeByName(t, "SimpleRequest")
-			in.SetFieldByName("name", fmt.Sprintf("ktr%d", i))
-			req := NewRequest(endpoint, in, out)
-
-			err = s.Send(req)
-			assert.NoError(t, err)
-		}
-
-		res, err := s.CloseAndReceive()
-		require.NoError(t, err)
-
-		expected := "ktr2, you greet 3 times."
-		assert.Equal(t, expected, extractMessage(t, res))
-	})
-
-	t.Run("BidiStreaming", func(t *testing.T) {
-		defer server.New(false).Serve(nil, true).Stop()
-
-		client := NewClient(defaultAddr)
-		endpoint := ToEndpoint("api", service, service.GetMethod()[11])
-		assert.Equal(t, endpoint, "/api.Example/BidiStreaming")
-
-		in := pkg.getMessageTypeByName(t, "SimpleRequest")
-		out := pkg.getMessageTypeByName(t, "SimpleResponse")
-
-		req := NewRequest(endpoint, in, out)
-		s, err := client.BidiStreaming(context.Background(), req)
-		require.NoError(t, err)
-
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			for {
-				res, err := s.Receive()
-				if err == ErrConnectionClosed {
-					return
-				}
-				// TODO: use testing.T
-				// ref. https://godoc.org/testing#T
-				if err != nil {
-					panic(err)
-				}
-
-				actual := extractMessage(t, res)
-				assert.True(t, strings.HasPrefix(actual, "hello ktr"))
-			}
-		}()
-
-		for i := 0; i < 2; i++ {
-			select {
-			case <-done:
-				return
-			default:
-				in := pkg.getMessageTypeByName(t, "SimpleRequest")
-				in.SetFieldByName("name", fmt.Sprintf("ktr%d", i))
-				req := NewRequest(endpoint, in, out)
-
-				err := s.Send(req)
-				assert.NoError(t, err)
-			}
-		}
-
-		time.Sleep(10 * time.Second)
-
-		err = s.Close()
-		require.NoError(t, err)
 	})
 }
 
