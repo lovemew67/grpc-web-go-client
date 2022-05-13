@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/binary"
 	"io"
-	"sync"
 
 	"github.com/pkg/errors"
 	"google.golang.org/grpc/encoding"
@@ -13,24 +12,6 @@ import (
 )
 
 type ClientOption func(*Client)
-
-func WithTransportBuilder(b TransportBuilder) ClientOption {
-	return func(c *Client) {
-		c.tb = b
-	}
-}
-
-func WithStreamTransportBuilder(b StreamTransportBuilder) ClientOption {
-	return func(c *Client) {
-		c.stb = b
-	}
-}
-
-func WithCodec(codec encoding.Codec) ClientOption {
-	return func(c *Client) {
-		c.codec = codec
-	}
-}
 
 // Client starts each API session.
 type Client struct {
@@ -70,13 +51,13 @@ func NewClient(host string, opts ...ClientOption) *Client {
 }
 
 // Unary sends an unary request. (also known as simple request)
-func (c *Client) Unary(ctx context.Context, req *Request) (*Response, error) {
+func (c *Client) Unary(ctx context.Context, req *Request, insecure bool) (*Response, error) {
 	r, err := parseRequestBody(c.codec, req.in)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to build the request body")
 	}
 
-	rawBody, err := c.tb(c.host, req).Send(ctx, r)
+	rawBody, err := c.tb(c.host, req, insecure).Send(ctx, r)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to send the request")
 	}
@@ -94,208 +75,6 @@ func (c *Client) Unary(ctx context.Context, req *Request) (*Response, error) {
 	return &Response{
 		ContentType: c.codec.Name(),
 		Content:     req.out,
-	}, nil
-}
-
-type ServerStreamClient interface {
-	Receive() (*Response, error)
-}
-
-type serverStreamClient struct {
-	ctx context.Context
-	t   Transport
-	req *Request
-
-	resStream io.ReadCloser
-
-	codec encoding.Codec
-}
-
-// Receive receives multi responses through a stream.
-// Receive returns io.EOF at the end.
-func (c *serverStreamClient) Receive() (*Response, error) {
-	resBody, err := parseResponseBody(c.resStream)
-	if err == io.EOF {
-		return nil, err
-	}
-
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to build the response body")
-	}
-
-	// check compressed flag.
-	// compressed flag is 0 or 1.
-	if resBody[0]>>3 != 0 && resBody[0]>>3 != 1 {
-		return nil, io.EOF
-	}
-
-	if err := c.codec.Unmarshal(resBody, c.req.out); err != nil {
-		return nil, errors.Wrap(err, "failed to unmarshal response body")
-	}
-
-	return &Response{
-		ContentType: c.codec.Name(),
-		Content:     c.req.out,
-	}, nil
-}
-
-// ServerStreamClient sends only one request and receives multi responses through a stream.
-func (c *Client) ServerStreaming(ctx context.Context, req *Request) (ServerStreamClient, error) {
-	t := c.tb(c.host, req)
-
-	r, err := parseRequestBody(c.codec, req.in)
-	if err != nil {
-		return nil, err
-	}
-
-	resStream, err := t.Send(ctx, r)
-	if err != nil {
-		return nil, err
-	}
-
-	return &serverStreamClient{
-		ctx:       ctx,
-		t:         t,
-		req:       req,
-		resStream: resStream,
-		codec:     c.codec,
-	}, nil
-}
-
-// ClientStreamClient sends multi requests and receives only one response.
-// At the end, ClientStreamClient must be call CloseAndReceive method.
-type ClientStreamClient interface {
-	Send(*Request) error
-	CloseAndReceive() (*Response, error)
-}
-
-type clientStreamClient struct {
-	ctx context.Context
-
-	reqOnce sync.Once
-
-	// curried StreamTransportBuilder
-	stb func(req *Request) (StreamTransport, error)
-	t   StreamTransport
-	req *Request
-
-	codec encoding.Codec
-}
-
-func (c *clientStreamClient) Send(req *Request) error {
-	var err error
-	c.reqOnce.Do(func() {
-		c.t, err = c.stb(req)
-		c.req = req
-	})
-	if err != nil {
-		return err
-	}
-
-	r, err := parseRequestBody(c.codec, req.in)
-	if err != nil {
-		return err
-	}
-
-	return c.t.Send(r)
-}
-
-func (c *clientStreamClient) CloseAndReceive() (*Response, error) {
-	res, err := c.t.Finish()
-	if err != nil {
-		return nil, err
-	}
-	defer res.Close()
-
-	resBody, err := parseResponseBody(res)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := c.codec.Unmarshal(resBody, c.req.out); err != nil {
-		return nil, errors.Wrap(err, "failed to unmarshal response body")
-	}
-
-	return &Response{
-		ContentType: c.codec.Name(),
-		Content:     c.req.out,
-	}, nil
-}
-
-// ClientStreamClient sends multi requests and receives only one response.
-func (c *Client) ClientStreaming(ctx context.Context) (ClientStreamClient, error) {
-	return &clientStreamClient{
-		ctx: ctx,
-		stb: func(req *Request) (StreamTransport, error) {
-			return c.stb(c.host, req.endpoint)
-		},
-		codec: c.codec,
-	}, nil
-}
-
-// BidiStreamClient sends multi requests and receives multi responses.
-// At the end, BidiStreamClient must be call Close method.
-type BidiStreamClient interface {
-	Send(*Request) error
-	Receive() (*Response, error)
-	Close() error
-}
-
-type bidiStreamClient struct {
-	ctx context.Context
-
-	t StreamTransport
-
-	req *Request
-
-	codec encoding.Codec
-}
-
-func (c *bidiStreamClient) Send(req *Request) error {
-	r, err := parseRequestBody(c.codec, req.in)
-	if err != nil {
-		return err
-	}
-
-	return c.t.Send(r)
-}
-
-func (c *bidiStreamClient) Receive() (*Response, error) {
-	res, err := c.t.Receive()
-	if err != nil {
-		return nil, err
-	}
-
-	resBody, err := parseResponseBody(res)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := c.codec.Unmarshal(resBody, c.req.out); err != nil {
-		return nil, errors.Wrap(err, "failed to unmarshal response body")
-	}
-
-	return &Response{
-		ContentType: c.codec.Name(),
-		Content:     c.req.out,
-	}, nil
-}
-
-func (c *bidiStreamClient) Close() error {
-	return c.t.Close()
-}
-
-// BidiStreamClient instantiates bidirectional streaming client.
-func (c *Client) BidiStreaming(ctx context.Context, req *Request) (BidiStreamClient, error) {
-	t, err := c.stb(c.host, req.endpoint)
-	if err != nil {
-		return nil, err
-	}
-	return &bidiStreamClient{
-		ctx:   ctx,
-		t:     t,
-		req:   req,
-		codec: c.codec,
 	}, nil
 }
 

@@ -17,7 +17,7 @@ import (
 )
 
 type (
-	TransportBuilder       func(host string, req *Request) Transport
+	TransportBuilder       func(host string, req *Request, insecure bool) Transport
 	StreamTransportBuilder func(host string, endpoint string) (StreamTransport, error)
 )
 
@@ -74,7 +74,7 @@ func (t *HTTPTransport) Send(ctx context.Context, body io.Reader) (io.ReadCloser
 	return res.Body, nil
 }
 
-func HTTPTransportBuilder(host string, req *Request) Transport {
+func HTTPTransportBuilder(host string, req *Request, insecure bool) Transport {
 	return &HTTPTransport{
 		host: host,
 		req:  req,
@@ -85,6 +85,7 @@ func HTTPTransportBuilder(host string, req *Request) Transport {
 				},
 			},
 		},
+		insecure: insecure,
 	}
 }
 
@@ -199,7 +200,7 @@ func (t *WebSocketTransport) Receive() (res io.ReadCloser, err error) {
 func (t *WebSocketTransport) Finish() (io.ReadCloser, error) {
 	defer t.conn.Close()
 
-	t.conn.WriteMessage(websocket.BinaryMessage, []byte{0x01})
+	_ = t.conn.WriteMessage(websocket.BinaryMessage, []byte{0x01})
 
 	res, err := t.Receive()
 	if err != nil {

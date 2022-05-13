@@ -7,14 +7,27 @@ import (
 
 	"github.com/golang/protobuf/protoc-gen-go/descriptor"
 	"github.com/jhump/protoreflect/desc"
+	"github.com/jhump/protoreflect/desc/protoparse"
 	"github.com/jhump/protoreflect/dynamic"
 	"github.com/ktr0731/grpc-test/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// var defaultAddr = "localhost:8880"
-var defaultAddr4 = "grpcweb.howardzhou.dev:443"
+var (
+	defaultAddr4 = "localhost:8080"
+)
+
+func parseProto(t *testing.T, fname string) []*desc.FileDescriptor {
+	t.Helper()
+
+	p := &protoparse.Parser{
+		ImportPaths: []string{"testdata"},
+	}
+	d, err := p.ParseFiles(fname)
+	require.NoError(t, err)
+	return d
+}
 
 type protoHelper struct {
 	*desc.FileDescriptor
@@ -65,7 +78,9 @@ func Test_ClientE2E(t *testing.T) {
 	service := pkg.getServiceByName(t, "EchoService")
 
 	t.Run("Unary", func(t *testing.T) {
-		defer server.New().Serve().Stop()
+		defer func() {
+			_ = server.New().Serve().Stop()
+		}()
 
 		client := NewClient(defaultAddr4)
 		endpoint := ToEndpoint("echo", service, service.GetMethod()[0])
@@ -83,12 +98,10 @@ func Test_ClientE2E(t *testing.T) {
 			out := pkg.getMessageTypeByName(t, "HiResponse")
 
 			req := NewRequest(endpoint, in, out)
-			res, err := client.Unary(context.Background(), req)
+			res, err := client.Unary(context.Background(), req, true)
 			assert.NoError(t, err)
 
 			assert.Equal(t, c, extractMessage(t, res))
-			// expected := fmt.Sprintf("hello, %s", c)
-			// assert.Equal(t, expected, extractMessage(t, res))
 		}
 	})
 }
